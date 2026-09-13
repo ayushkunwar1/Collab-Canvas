@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { getWorkspaceMembership } from '../middleware/workspaceAuth.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -55,7 +54,12 @@ router.post('/', async (req, res) => {
     return res.status(500).json({ error: 'Unable to create workspace.' });
   }
 
-  return res.status(201).json({ workspace: { ...data, role: 'owner' } });
+  return res.status(201).json({
+    workspace: {
+      ...data,
+      role: 'owner',
+    },
+  });
 });
 
 router.post('/:workspaceId/join', async (req, res) => {
@@ -65,25 +69,16 @@ router.post('/:workspaceId/join', async (req, res) => {
     return res.status(400).json({ error: 'Enter a valid workspace ID.' });
   }
 
-  const { data: workspace, error: workspaceError } = await req.supabase
-    .from('workspaces')
-    .select('id, owner_id')
-    .eq('id', workspaceId)
-    .maybeSingle();
+  const { data: workspaceExists, error: workspaceError } = await req.supabase
+    .rpc('workspace_exists', { target_workspace_id: workspaceId });
 
   if (workspaceError) {
     console.error('Check workspace:', workspaceError);
     return res.status(500).json({ error: 'Unable to check the workspace.' });
   }
 
-  if (!workspace) {
+  if (!workspaceExists) {
     return res.status(404).json({ error: 'Workspace not found.' });
-  }
-
-  const existing = await getWorkspaceMembership(req.supabase, workspaceId, req.user.id);
-
-  if (existing) {
-    return res.status(409).json({ error: 'You are already a member of this workspace.' });
   }
 
   const { data, error } = await req.supabase
@@ -91,10 +86,14 @@ router.post('/:workspaceId/join', async (req, res) => {
     .insert({
       workspace_id: workspaceId,
       user_id: req.user.id,
-      role: workspace.owner_id === req.user.id ? 'owner' : 'member',
+      role: 'member',
     })
     .select('workspace_id, user_id, role')
-    .single();
+    .maybeSingle();
+
+  if (error?.code === '23505') {
+    return res.status(409).json({ error: 'You are already a member of this workspace.' });
+  }
 
   if (error) {
     console.error('Join workspace:', error);
@@ -104,17 +103,53 @@ router.post('/:workspaceId/join', async (req, res) => {
   return res.status(201).json({ membership: data });
 });
 
-router.get('/:workspaceId', async (req, res) => {
+router.delete('/:workspaceId', async (req, res) => {
   const { workspaceId } = req.params;
 
   if (!isUuid(workspaceId)) {
     return res.status(400).json({ error: 'Invalid workspace ID.' });
   }
 
-  const membership = await getWorkspaceMembership(req.supabase, workspaceId, req.user.id);
+  // The server uses the Supabase secret key, so RLS is bypassed here.
+  // Explicitly verify ownership before deleting anything.
+  const { data: workspace, error: workspaceError } = await req.supabase
+    .from('workspaces')
+    .select('id, owner_id')
+    .eq('id', workspaceId)
+    .maybeSingle();
 
-  if (!membership) {
-    return res.status(403).json({ error: 'Workspace not found or you do not have access.' });
+  if (workspaceError) {
+    console.error('Check workspace owner:', workspaceError);
+    return res.status(500).json({ error: 'Unable to verify workspace ownership.' });
+  }
+
+  if (!workspace) {
+    return res.status(404).json({ error: 'Workspace not found.' });
+  }
+
+  if (workspace.owner_id !== req.user.id) {
+    return res.status(403).json({ error: 'Only the workspace owner can delete this workspace.' });
+  }
+
+  const { error: deleteError } = await req.supabase
+    .from('workspaces')
+    .delete()
+    .eq('id', workspaceId)
+    .eq('owner_id', req.user.id);
+
+  if (deleteError) {
+    console.error('Delete workspace:', deleteError);
+    return res.status(500).json({ error: 'Unable to delete workspace.' });
+  }
+
+  return res.status(204).end();
+});
+
+router.get('/:workspaceId', async (req, res) => {
+  const { workspaceId } = req.params;
+
+  if (!isUuid(workspaceId)) {
+    return res.status(400).json({ error: 'Invalid workspace ID.' });
   }
 
   const { data, error } = await req.supabase
@@ -129,7 +164,7 @@ router.get('/:workspaceId', async (req, res) => {
   }
 
   if (!data) {
-    return res.status(404).json({ error: 'Workspace not found.' });
+    return res.status(404).json({ error: 'Workspace not found or you do not have access.' });
   }
 
   return res.json({
