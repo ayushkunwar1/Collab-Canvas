@@ -13,6 +13,7 @@ import IdeaCard from './IdeaCard';
 import IdeaForm from './IdeaForm';
 import Presence from './Presence';
 import CollaborativeCanvas from './CollaborativeCanvas';
+import VoiceChat from './VoiceChat';
 
 const FILTERS = ['All', 'General', 'Product', 'Study', 'Event', 'Design', 'Tech'];
 
@@ -326,6 +327,8 @@ export default function WorkspaceClient({ workspaceId }) {
             </span>
           </div>
         </div>
+
+        <VoiceChat workspaceId={workspaceId} onlineUsers={onlineUsers} />
 
         <div className="view-tabs">
           <button className={view === 'ideas' ? 'active' : ''} onClick={() => setView('ideas')}>
