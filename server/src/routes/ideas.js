@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { getWorkspaceMembership } from '../middleware/workspaceAuth.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -26,11 +25,6 @@ function safeSearch(value) {
 
 const profileSelect = 'id, workspace_id, user_id, title, description, category, created_at, updated_at, profiles!ideas_user_id_fkey(id, display_name, avatar_url)';
 
-async function assertMember(req, workspaceId) {
-  const membership = await getWorkspaceMembership(req.supabase, workspaceId, req.user.id);
-  return Boolean(membership);
-}
-
 async function getIdeaPayload(supabase, workspaceId, userId, query = {}) {
   const search = safeSearch(query.search);
   const category = cleanText(query.category, 32);
@@ -46,8 +40,7 @@ async function getIdeaPayload(supabase, workspaceId, userId, query = {}) {
   }
 
   if (search) {
-    const pattern = `%${search}%`;
-    ideasQuery = ideasQuery.or(`title.ilike.${pattern},description.ilike.${pattern}`);
+    ideasQuery = ideasQuery.or(`title.ilike.%${search}%,description.ilike.%${search}%`);
   }
 
   const [{ data: ideas, error: ideasError }, { data: votes, error: votesError }] = await Promise.all([
@@ -83,11 +76,13 @@ async function getIdeaPayload(supabase, workspaceId, userId, query = {}) {
 
 router.get('/workspace/:workspaceId', async (req, res) => {
   try {
-    if (!(await assertMember(req, req.params.workspaceId))) {
-      return res.status(403).json({ error: 'You do not have access to this workspace.' });
-    }
+    const ideas = await getIdeaPayload(
+      req.supabase,
+      req.params.workspaceId,
+      req.user.id,
+      req.query,
+    );
 
-    const ideas = await getIdeaPayload(req.supabase, req.params.workspaceId, req.user.id, req.query);
     return res.json({ ideas, categories });
   } catch (error) {
     console.error('Ideas route:', error);
@@ -96,12 +91,6 @@ router.get('/workspace/:workspaceId', async (req, res) => {
 });
 
 router.post('/workspace/:workspaceId', async (req, res) => {
-  const workspaceId = req.params.workspaceId;
-
-  if (!(await assertMember(req, workspaceId))) {
-    return res.status(403).json({ error: 'You do not have access to this workspace.' });
-  }
-
   const title = cleanText(req.body?.title, 120);
   const description = cleanText(req.body?.description, 2000);
   const category = normalizeCategory(req.body?.category);
@@ -112,13 +101,19 @@ router.post('/workspace/:workspaceId', async (req, res) => {
 
   const { data, error } = await req.supabase
     .from('ideas')
-    .insert({ workspace_id: workspaceId, user_id: req.user.id, title, description, category })
+    .insert({
+      workspace_id: req.params.workspaceId,
+      user_id: req.user.id,
+      title,
+      description,
+      category,
+    })
     .select(profileSelect)
     .single();
 
   if (error) {
     console.error('Create idea:', error);
-    return res.status(500).json({ error: 'Unable to create idea.' });
+    return res.status(500).json({ error: 'Unable to create idea. Make sure you belong to this workspace.' });
   }
 
   return res.status(201).json({
@@ -141,55 +136,48 @@ router.patch('/:ideaId', async (req, res) => {
     return res.status(400).json({ error: 'Title must be at least 3 characters.' });
   }
 
-  const { data: existing, error: existingError } = await req.supabase
-    .from('ideas')
-    .select('id, user_id')
-    .eq('id', req.params.ideaId)
-    .maybeSingle();
-
-  if (existingError) {
-    console.error('Find idea:', existingError);
-    return res.status(500).json({ error: 'Unable to find idea.' });
-  }
-
-  if (!existing) return res.status(404).json({ error: 'Idea not found.' });
-  if (existing.user_id !== req.user.id) return res.status(403).json({ error: 'You do not have permission to edit this idea.' });
-
   const { data, error } = await req.supabase
     .from('ideas')
     .update({ title, description, category })
     .eq('id', req.params.ideaId)
+    .eq('user_id', req.user.id)
     .select(profileSelect)
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.error('Update idea:', error);
     return res.status(500).json({ error: 'Unable to update idea.' });
   }
 
-  return res.json({ idea: { ...data, profile: data.profiles, profiles: undefined } });
+  if (!data) {
+    return res.status(403).json({ error: 'You do not have permission to edit this idea.' });
+  }
+
+  return res.json({
+    idea: {
+      ...data,
+      profile: data.profiles,
+      profiles: undefined,
+    },
+  });
 });
 
 router.delete('/:ideaId', async (req, res) => {
-  const { data: existing, error: existingError } = await req.supabase
+  const { data, error } = await req.supabase
     .from('ideas')
-    .select('id, user_id')
+    .delete()
     .eq('id', req.params.ideaId)
+    .eq('user_id', req.user.id)
+    .select('id')
     .maybeSingle();
-
-  if (existingError) {
-    console.error('Find idea:', existingError);
-    return res.status(500).json({ error: 'Unable to find idea.' });
-  }
-
-  if (!existing) return res.status(404).json({ error: 'Idea not found.' });
-  if (existing.user_id !== req.user.id) return res.status(403).json({ error: 'You do not have permission to delete this idea.' });
-
-  const { error } = await req.supabase.from('ideas').delete().eq('id', req.params.ideaId);
 
   if (error) {
     console.error('Delete idea:', error);
     return res.status(500).json({ error: 'Unable to delete idea.' });
+  }
+
+  if (!data) {
+    return res.status(403).json({ error: 'You do not have permission to delete this idea.' });
   }
 
   return res.status(204).end();
@@ -207,10 +195,8 @@ router.post('/:ideaId/upvote', async (req, res) => {
     return res.status(500).json({ error: 'Unable to verify idea.' });
   }
 
-  if (!idea) return res.status(404).json({ error: 'Idea not found.' });
-
-  if (!(await assertMember(req, idea.workspace_id))) {
-    return res.status(403).json({ error: 'You do not have access to this workspace.' });
+  if (!idea) {
+    return res.status(404).json({ error: 'Idea not found or you do not have access.' });
   }
 
   const { error } = await req.supabase.from('upvotes').insert({
@@ -219,7 +205,10 @@ router.post('/:ideaId/upvote', async (req, res) => {
     user_id: req.user.id,
   });
 
-  if (error?.code === '23505') return res.status(200).json({ ok: true, alreadyVoted: true });
+  if (error?.code === '23505') {
+    return res.status(200).json({ ok: true, alreadyVoted: true });
+  }
+
   if (error) {
     console.error('Upvote:', error);
     return res.status(500).json({ error: 'Unable to upvote idea.' });
@@ -229,21 +218,6 @@ router.post('/:ideaId/upvote', async (req, res) => {
 });
 
 router.delete('/:ideaId/upvote', async (req, res) => {
-  const { data: idea, error: ideaError } = await req.supabase
-    .from('ideas')
-    .select('workspace_id')
-    .eq('id', req.params.ideaId)
-    .maybeSingle();
-
-  if (ideaError) {
-    console.error('Verify idea:', ideaError);
-    return res.status(500).json({ error: 'Unable to verify idea.' });
-  }
-
-  if (!idea || !(await assertMember(req, idea.workspace_id))) {
-    return res.status(403).json({ error: 'You do not have access to this idea.' });
-  }
-
   const { error } = await req.supabase
     .from('upvotes')
     .delete()
