@@ -24,7 +24,7 @@ function uid() {
   );
 }
 
-function getPoint(event, canvas) {
+function pointForEvent(event, canvas) {
   const rect = canvas.getBoundingClientRect();
 
   if (!rect.width || !rect.height) {
@@ -32,10 +32,17 @@ function getPoint(event, canvas) {
   }
 
   return {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
+    x: Math.max(
+      0,
+      Math.min(1, (event.clientX - rect.left) / rect.width),
+    ),
+    y: Math.max(
+      0,
+      Math.min(1, (event.clientY - rect.top) / rect.height),
+    ),
   };
 }
+
 
 function configureCanvas(canvas) {
   const rect = canvas.getBoundingClientRect();
@@ -44,19 +51,14 @@ function configureCanvas(canvas) {
     return null;
   }
 
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.round(rect.width);
-  const height = Math.round(rect.height);
+  const dpr = window.devicePixelRatio || 1;
 
-  const pixelWidth = Math.round(width * dpr);
-  const pixelHeight = Math.round(height * dpr);
+  const width = Math.floor(rect.width * dpr);
+  const height = Math.floor(rect.height * dpr);
 
-  if (
-    canvas.width !== pixelWidth ||
-    canvas.height !== pixelHeight
-  ) {
-    canvas.width = pixelWidth;
-    canvas.height = pixelHeight;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
   }
 
   const ctx = canvas.getContext('2d');
@@ -69,116 +71,21 @@ function configureCanvas(canvas) {
 
   return {
     ctx,
-    width,
-    height,
-    dpr,
+    width: rect.width,
+    height: rect.height,
   };
-}
-
-function normalizePoint(point, width, height) {
-  return {
-    x: width ? point.x / width : 0,
-    y: height ? point.y / height : 0,
-  };
-}
-
-function denormalizePoint(point, width, height) {
-  return {
-    x: point.x * width,
-    y: point.y * height,
-  };
-}
-
-function normalizeAction(action, width, height) {
-  if (!action) return null;
-
-  const type = action.type;
-
-  if (type === 'stroke' || type === 'eraser') {
-    const points = action.points || [];
-
-    return {
-      ...action,
-      points: points.map((point) => {
-        if (
-          point.x >= 0 &&
-          point.x <= 1 &&
-          point.y >= 0 &&
-          point.y <= 1
-        ) {
-          return point;
-        }
-
-        return normalizePoint(point, width, height);
-      }),
-    };
-  }
-
-  if (
-    type === 'line' ||
-    type === 'rect' ||
-    type === 'circle'
-  ) {
-    if (!action.start || !action.end) {
-      return action;
-    }
-
-    const normalizedStart =
-      action.start.x >= 0 &&
-      action.start.x <= 1 &&
-      action.start.y >= 0 &&
-      action.start.y <= 1
-        ? action.start
-        : normalizePoint(action.start, width, height);
-
-    const normalizedEnd =
-      action.end.x >= 0 &&
-      action.end.x <= 1 &&
-      action.end.y >= 0 &&
-      action.end.y <= 1
-        ? action.end
-        : normalizePoint(action.end, width, height);
-
-    return {
-      ...action,
-      start: normalizedStart,
-      end: normalizedEnd,
-    };
-  }
-
-  if (type === 'text') {
-    return {
-      ...action,
-      x:
-        action.x >= 0 && action.x <= 1
-          ? action.x
-          : width
-            ? action.x / width
-            : 0,
-      y:
-        action.y >= 0 && action.y <= 1
-          ? action.y
-          : height
-            ? action.y / height
-            : 0,
-    };
-  }
-
-  return action;
 }
 
 function drawAction(ctx, action, width, height) {
-  if (!ctx || !action) return;
+  if (!action) return;
 
   ctx.save();
 
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  if (
-    action.type === 'stroke' ||
-    action.type === 'eraser'
-  ) {
+
+  if (action.type === 'stroke' || action.type === 'eraser') {
     const points = action.points || [];
 
     if (!points.length) {
@@ -195,37 +102,37 @@ function drawAction(ctx, action, width, height) {
     } else {
       ctx.globalCompositeOperation = 'source-over';
       ctx.strokeStyle = action.color || '#0f172a';
-      ctx.fillStyle = action.color || '#0f172a';
     }
-
-    const first = denormalizePoint(
-      points[0],
-      width,
-      height,
-    );
 
     if (points.length === 1) {
       ctx.beginPath();
+
       ctx.arc(
-        first.x,
-        first.y,
+        points[0].x * width,
+        points[0].y * height,
         Math.max(1, size / 2),
         0,
         Math.PI * 2,
       );
+
+      if (action.type === 'stroke') {
+        ctx.fillStyle = action.color || '#0f172a';
+      }
+
       ctx.fill();
     } else {
       ctx.beginPath();
-      ctx.moveTo(first.x, first.y);
+
+      ctx.moveTo(
+        points[0].x * width,
+        points[0].y * height,
+      );
 
       for (let i = 1; i < points.length; i += 1) {
-        const point = denormalizePoint(
-          points[i],
-          width,
-          height,
+        ctx.lineTo(
+          points[i].x * width,
+          points[i].y * height,
         );
-
-        ctx.lineTo(point.x, point.y);
       }
 
       ctx.stroke();
@@ -234,6 +141,8 @@ function drawAction(ctx, action, width, height) {
     ctx.restore();
     return;
   }
+
+
 
   if (
     action.type === 'line' ||
@@ -245,22 +154,10 @@ function drawAction(ctx, action, width, height) {
       return;
     }
 
-    const start = denormalizePoint(
-      action.start,
-      width,
-      height,
-    );
-
-    const end = denormalizePoint(
-      action.end,
-      width,
-      height,
-    );
-
-    const x1 = start.x;
-    const y1 = start.y;
-    const x2 = end.x;
-    const y2 = end.y;
+    const x1 = action.start.x * width;
+    const y1 = action.start.y * height;
+    const x2 = action.end.x * width;
+    const y2 = action.end.y * height;
 
     const w = x2 - x1;
     const h = y2 - y1;
@@ -305,6 +202,7 @@ function drawAction(ctx, action, width, height) {
     return;
   }
 
+
   if (action.type === 'text') {
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = action.color || '#0f172a';
@@ -325,42 +223,32 @@ function drawAction(ctx, action, width, height) {
   ctx.restore();
 }
 
-function clearCanvas(canvas, width, height) {
-  const ctx = canvas.getContext('2d');
 
-  if (!ctx) return;
-
-  ctx.clearRect(0, 0, width, height);
-
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, width, height);
-}
 
 function renderBaseCanvas(canvas, actions) {
   const result = configureCanvas(canvas);
 
   if (!result) return;
 
-  const {
-    ctx,
-    width,
-    height,
-  } = result;
+  const { ctx, width, height } = result;
 
-  clearCanvas(canvas, width, height);
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
 
   for (const item of actions) {
-    const action = item.action || item;
-
     drawAction(
       ctx,
-      action,
+      item.action || item,
       width,
       height,
     );
   }
 }
+
 
 function drawSegment(
   canvas,
@@ -368,99 +256,116 @@ function drawSegment(
   to,
   color,
   size,
-  eraser,
+  eraser = false,
 ) {
-  const result = configureCanvas(canvas);
+  const ctx = canvas.getContext('2d');
 
-  if (!result) return;
+  if (!ctx) return;
 
-  const {
-    ctx,
-  } = result;
+  const rect = canvas.getBoundingClientRect();
+
+  if (!rect.width || !rect.height) return;
+
+  const dpr = window.devicePixelRatio || 1;
 
   ctx.save();
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.lineWidth = Math.max(1, size);
 
   if (eraser) {
-    ctx.globalCompositeOperation =
-      'destination-out';
+    ctx.globalCompositeOperation = 'destination-out';
   } else {
-    ctx.globalCompositeOperation =
-      'source-over';
+    ctx.globalCompositeOperation = 'source-over';
     ctx.strokeStyle = color;
-    ctx.fillStyle = color;
   }
 
-  if (
-    from.x === to.x &&
-    from.y === to.y
-  ) {
-    ctx.beginPath();
+  const fromX = from.x * rect.width;
+  const fromY = from.y * rect.height;
+  const toX = to.x * rect.width;
+  const toY = to.y * rect.height;
 
+  if (fromX === toX && fromY === toY) {
+    ctx.beginPath();
     ctx.arc(
-      from.x,
-      from.y,
+      fromX,
+      fromY,
       Math.max(1, size / 2),
       0,
       Math.PI * 2,
     );
-
+    if (eraser) {
+      ctx.globalCompositeOperation = 'destination-out';
+    } else {
+      ctx.fillStyle = color;
+    }
     ctx.fill();
   } else {
     ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(toX, toY);
     ctx.stroke();
   }
 
   ctx.restore();
 }
 
-function drawPreviewShape(
-  canvas,
-  drawing,
-  point,
-  color,
-  size,
-) {
-  const result = configureCanvas(canvas);
 
-  if (!result) return;
 
-  const {
-    ctx,
-    width,
-    height,
-  } = result;
+function drawPreviewShape(canvas, action) {
+  const ctx = canvas.getContext('2d');
 
-  ctx.clearRect(0, 0, width, height);
+  if (!ctx) return;
+
+  const rect = canvas.getBoundingClientRect();
+
+  if (!rect.width || !rect.height) return;
+
+  const dpr = window.devicePixelRatio || 1;
 
   ctx.save();
 
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = Math.max(1, size);
-  ctx.strokeStyle = color;
 
-  const x1 = drawing.start.x;
-  const y1 = drawing.start.y;
-  const x2 = point.x;
-  const y2 = point.y;
+  ctx.lineWidth = Math.max(
+    1,
+    action.size || 4,
+  );
+
+  ctx.strokeStyle =
+    action.color || '#0f172a';
+
+  const x1 =
+    action.start.x * rect.width;
+
+  const y1 =
+    action.start.y * rect.height;
+
+  const x2 =
+    action.end.x * rect.width;
+
+  const y2 =
+    action.end.y * rect.height;
 
   const w = x2 - x1;
   const h = y2 - y1;
 
-  if (drawing.kind === 'line') {
+  if (action.type === 'line') {
     ctx.beginPath();
+
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
+
     ctx.stroke();
   }
 
-  if (drawing.kind === 'rect') {
+  if (action.type === 'rect') {
     ctx.strokeRect(
       Math.min(x1, x2),
       Math.min(y1, y2),
@@ -469,7 +374,7 @@ function drawPreviewShape(
     );
   }
 
-  if (drawing.kind === 'circle') {
+  if (action.type === 'circle') {
     ctx.beginPath();
 
     ctx.ellipse(
@@ -488,6 +393,8 @@ function drawPreviewShape(
   ctx.restore();
 }
 
+
+
 export default function CollaborativeCanvas({
   workspaceId,
   canClear = false,
@@ -496,29 +403,28 @@ export default function CollaborativeCanvas({
 
   const baseCanvasRef = useRef(null);
   const previewCanvasRef = useRef(null);
-  const stageRef = useRef(null);
 
   const drawingRef = useRef(null);
   const textRef = useRef(null);
+
   const actionsRef = useRef([]);
 
   const [actions, setActions] = useState([]);
+
   const [tool, setTool] = useState('pen');
   const [color, setColor] = useState('#0f172a');
   const [size, setSize] = useState(4);
 
-  const [loading, setLoading] =
-    useState(true);
-  const [error, setError] =
-    useState('');
-  const [saving, setSaving] =
-    useState(false);
-  const [textEditor, setTextEditor] =
-    useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [textEditor, setTextEditor] = useState(null);
+
 
   useEffect(() => {
     actionsRef.current = actions;
   }, [actions]);
+
 
   const load = useCallback(async () => {
     setError('');
@@ -528,39 +434,10 @@ export default function CollaborativeCanvas({
         `/canvas/workspace/${workspaceId}`,
       );
 
-      const canvas =
-        baseCanvasRef.current;
-
-      let width = 1;
-      let height = 1;
-
-      if (canvas) {
-        const rect =
-          canvas.getBoundingClientRect();
-
-        width = rect.width || 1;
-        height = rect.height || 1;
-      }
-
       const nextActions =
-        (result.actions || [])
-          .map((item) => {
-            const action =
-              item.action || item;
+        result.actions || [];
 
-            return {
-              ...item,
-              action:
-                normalizeAction(
-                  action,
-                  width,
-                  height,
-                ),
-            };
-          });
-
-      actionsRef.current =
-        nextActions;
+      actionsRef.current = nextActions;
 
       setActions(nextActions);
     } catch (loadError) {
@@ -578,6 +455,8 @@ export default function CollaborativeCanvas({
       void load();
     }
   }, [user, load]);
+
+
 
   useEffect(() => {
     if (!user) return undefined;
@@ -604,13 +483,13 @@ export default function CollaborativeCanvas({
           if (!incoming) return;
 
           setActions((current) => {
-            if (
+            const alreadyExists =
               current.some(
                 (item) =>
-                  item.id ===
-                  incoming.id,
-              )
-            ) {
+                  item.id === incoming.id,
+              );
+
+            if (alreadyExists) {
               return current;
             }
 
@@ -619,8 +498,7 @@ export default function CollaborativeCanvas({
               incoming,
             ];
 
-            actionsRef.current =
-              next;
+            actionsRef.current = next;
 
             return next;
           });
@@ -648,12 +526,10 @@ export default function CollaborativeCanvas({
             const next =
               current.filter(
                 (item) =>
-                  item.id !==
-                  deletedId,
+                  item.id !== deletedId,
               );
 
-            actionsRef.current =
-              next;
+            actionsRef.current = next;
 
             return next;
           });
@@ -662,64 +538,54 @@ export default function CollaborativeCanvas({
       .subscribe();
 
     return () => {
-      supabase.removeChannel(
-        channel,
-      );
+      supabase.removeChannel(channel);
     };
-  }, [
-    workspaceId,
-    user,
-    load,
-  ]);
+  }, [workspaceId, user, load]);
 
-  const redraw = useCallback(() => {
-    const base =
-      baseCanvasRef.current;
 
-    const preview =
-      previewCanvasRef.current;
-
-    if (base) {
-      renderBaseCanvas(
-        base,
-        actionsRef.current,
-      );
-    }
-
-    if (preview) {
-      const result =
-        configureCanvas(preview);
-
-      if (result) {
-        result.ctx.clearRect(
-          0,
-          0,
-          result.width,
-          result.height,
-        );
-      }
-    }
-  }, []);
 
   useEffect(() => {
-    const stage =
-      stageRef.current;
+    const canvas =
+      baseCanvasRef.current;
 
-    if (!stage) return undefined;
+    if (!canvas) return undefined;
+
+    const redraw = () => {
+      renderBaseCanvas(
+        canvas,
+        actionsRef.current,
+      );
+
+      const preview =
+        previewCanvasRef.current;
+
+      if (preview) {
+        const result =
+          configureCanvas(preview);
+
+        if (result) {
+          result.ctx.clearRect(
+            0,
+            0,
+            result.width,
+            result.height,
+          );
+        }
+      }
+    };
 
     redraw();
 
     const observer =
-      new ResizeObserver(() => {
-        redraw();
-      });
+      new ResizeObserver(redraw);
 
-    observer.observe(stage);
+    observer.observe(canvas);
 
-    return () => {
+    return () =>
       observer.disconnect();
-    };
-  }, [redraw]);
+  }, [actions]);
+
+
 
   useEffect(() => {
     if (!textEditor) return;
@@ -729,9 +595,10 @@ export default function CollaborativeCanvas({
     });
   }, [textEditor]);
 
+
+
   async function saveAction(action) {
-    const localId =
-      `local-${uid()}`;
+    const localId = `local-${uid()}`;
 
     const optimisticAction = {
       id: localId,
@@ -744,8 +611,7 @@ export default function CollaborativeCanvas({
         optimisticAction,
       ];
 
-      actionsRef.current =
-        next;
+      actionsRef.current = next;
 
       return next;
     });
@@ -774,24 +640,59 @@ export default function CollaborativeCanvas({
     }
   }
 
-  function clearPreview() {
-    const preview =
-      previewCanvasRef.current;
 
-    if (!preview) return;
 
-    const result =
-      configureCanvas(preview);
+  async function clearCanvas() {
+    if (
+      !window.confirm(
+        'Clear the shared canvas for everyone?',
+      )
+    ) {
+      return;
+    }
 
-    if (!result) return;
+    setSaving(true);
+    setError('');
 
-    result.ctx.clearRect(
-      0,
-      0,
-      result.width,
-      result.height,
-    );
+    try {
+      await apiFetch(
+        `/canvas/workspace/${workspaceId}`,
+        {
+          method: 'DELETE',
+        },
+      );
+
+      actionsRef.current = [];
+
+      setActions([]);
+
+      const preview =
+        previewCanvasRef.current;
+
+      if (preview) {
+        const result =
+          configureCanvas(preview);
+
+        if (result) {
+          result.ctx.clearRect(
+            0,
+            0,
+            result.width,
+            result.height,
+          );
+        }
+      }
+    } catch (clearError) {
+      setError(
+        clearError.message ||
+          'Unable to clear the canvas.',
+      );
+    } finally {
+      setSaving(false);
+    }
   }
+
+
 
   function handleDown(event) {
     if (event.button !== 0) return;
@@ -801,12 +702,17 @@ export default function CollaborativeCanvas({
 
     if (!canvas) return;
 
-    const point =
-      getPoint(event, canvas);
+ 
 
     if (tool === 'text') {
       const rect =
         canvas.getBoundingClientRect();
+
+      const point =
+        pointForEvent(
+          event,
+          canvas,
+        );
 
       setTextEditor({
         x: point.x,
@@ -823,9 +729,17 @@ export default function CollaborativeCanvas({
       return;
     }
 
+    const point =
+      pointForEvent(
+        event,
+        canvas,
+      );
+
     canvas.setPointerCapture?.(
       event.pointerId,
     );
+
+
 
     if (
       tool === 'pen' ||
@@ -849,6 +763,8 @@ export default function CollaborativeCanvas({
       return;
     }
 
+
+
     if (
       tool === 'line' ||
       tool === 'rect' ||
@@ -860,9 +776,26 @@ export default function CollaborativeCanvas({
         lastPoint: point,
       };
 
-      clearPreview();
+      const preview =
+        previewCanvasRef.current;
+
+      if (preview) {
+        const result =
+          configureCanvas(preview);
+
+        if (result) {
+          result.ctx.clearRect(
+            0,
+            0,
+            result.width,
+            result.height,
+          );
+        }
+      }
     }
   }
+
+
 
   function handleMove(event) {
     const drawing =
@@ -876,7 +809,12 @@ export default function CollaborativeCanvas({
     }
 
     const point =
-      getPoint(event, canvas);
+      pointForEvent(
+        event,
+        canvas,
+      );
+
+  
 
     if (
       drawing.kind === 'pen' ||
@@ -886,6 +824,7 @@ export default function CollaborativeCanvas({
         drawing.lastPoint;
 
       drawing.points.push(point);
+
       drawing.lastPoint = point;
 
       drawSegment(
@@ -900,6 +839,8 @@ export default function CollaborativeCanvas({
       return;
     }
 
+ 
+
     if (
       drawing.kind === 'line' ||
       drawing.kind === 'rect' ||
@@ -912,15 +853,32 @@ export default function CollaborativeCanvas({
 
       if (!preview) return;
 
+      const result =
+        configureCanvas(preview);
+
+      if (!result) return;
+
+      result.ctx.clearRect(
+        0,
+        0,
+        result.width,
+        result.height,
+      );
+
       drawPreviewShape(
         preview,
-        drawing,
-        point,
-        color,
-        size,
+        {
+          type: drawing.kind,
+          start: drawing.start,
+          end: point,
+          color,
+          size,
+        },
       );
     }
   }
+
+
 
   async function handleUp(event) {
     const drawing =
@@ -934,22 +892,11 @@ export default function CollaborativeCanvas({
     }
 
     const point =
-      getPoint(event, canvas);
+      pointForEvent(
+        event,
+        canvas,
+      );
 
-    drawingRef.current = null;
-
-    canvas.releasePointerCapture?.(
-      event.pointerId,
-    );
-
-    const rect =
-      canvas.getBoundingClientRect();
-
-    const width =
-      rect.width || 1;
-
-    const height =
-      rect.height || 1;
 
     if (
       drawing.kind === 'pen' ||
@@ -957,176 +904,167 @@ export default function CollaborativeCanvas({
     ) {
       drawing.points.push(point);
 
-      const normalizedPoints =
-        drawing.points.map(
-          (item) =>
-            normalizePoint(
-              item,
-              width,
-              height,
-            ),
-        );
-
       await saveAction({
         id: uid(),
         type:
           drawing.kind === 'eraser'
             ? 'eraser'
             : 'stroke',
-        points:
-          normalizedPoints,
+        points: drawing.points,
         ...(drawing.kind === 'pen'
           ? { color }
           : {}),
         size,
       });
-
-      return;
     }
+
+
 
     if (
       drawing.kind === 'line' ||
       drawing.kind === 'rect' ||
       drawing.kind === 'circle'
     ) {
-      const normalizedStart =
-        normalizePoint(
-          drawing.start,
-          width,
-          height,
-        );
-
-      const normalizedEnd =
-        normalizePoint(
-          point,
-          width,
-          height,
-        );
-
-      clearPreview();
-
       await saveAction({
         id: uid(),
         type: drawing.kind,
-        start: normalizedStart,
-        end: normalizedEnd,
+        start: drawing.start,
+        end: point,
         color,
         size,
       });
+
+      const preview =
+        previewCanvasRef.current;
+
+      if (preview) {
+        const result =
+          configureCanvas(preview);
+
+        if (result) {
+          result.ctx.clearRect(
+            0,
+            0,
+            result.width,
+            result.height,
+          );
+        }
+      }
     }
+
+    drawingRef.current = null;
   }
+
 
   function handleCancel() {
     drawingRef.current = null;
-    clearPreview();
+
+    const preview =
+      previewCanvasRef.current;
+
+    if (!preview) return;
+
+    const result =
+      configureCanvas(preview);
+
+    if (!result) return;
+
+    result.ctx.clearRect(
+      0,
+      0,
+      result.width,
+      result.height,
+    );
   }
 
-  async function submitText() {
-    if (!textEditor) return;
 
+  function finishText() {
     const text =
-      textEditor.text.trim();
+      textEditor?.text.trim();
 
     if (!text) {
       setTextEditor(null);
       return;
     }
 
-    const canvas =
-      baseCanvasRef.current;
+    const current =
+      textEditor;
 
-    if (!canvas) return;
+    setTextEditor(null);
 
-    const rect =
-      canvas.getBoundingClientRect();
-
-    const width =
-      rect.width || 1;
-
-    const height =
-      rect.height || 1;
-
-    await saveAction({
+    void saveAction({
       id: uid(),
       type: 'text',
+      x: current.x,
+      y: current.y,
       text,
-      x: textEditor.x / width,
-      y: textEditor.y / height,
       color,
       fontSize: Math.max(
-        14,
-        size * 4,
+        18,
+        size * 3,
       ),
     });
+  }
 
+  function cancelText() {
     setTextEditor(null);
   }
 
-  async function clearCanvas() {
-    if (
-      !window.confirm(
-        'Clear the shared canvas for everyone?',
-      )
-    ) {
-      return;
+  function handleTextKeyDown(event) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      finishText();
     }
 
-    setSaving(true);
-    setError('');
-
-    try {
-      await apiFetch(
-        `/canvas/workspace/${workspaceId}`,
-        {
-          method: 'DELETE',
-        },
-      );
-
-      actionsRef.current = [];
-      setActions([]);
-
-      clearPreview();
-
-      const base =
-        baseCanvasRef.current;
-
-      if (base) {
-        renderBaseCanvas(
-          base,
-          [],
-        );
-      }
-    } catch (clearError) {
-      setError(
-        clearError.message ||
-          'Unable to clear the canvas.',
-      );
-    } finally {
-      setSaving(false);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelText();
     }
   }
 
-  function exportPNG() {
-    const canvas =
+
+  function exportPng() {
+    const base =
       baseCanvasRef.current;
 
-    if (!canvas) return;
+    if (!base) return;
+
+    const exportCanvas =
+      document.createElement('canvas');
+
+    exportCanvas.width =
+      base.width;
+
+    exportCanvas.height =
+      base.height;
+
+    const ctx =
+      exportCanvas.getContext('2d');
+
+    if (!ctx) return;
+
+    ctx.drawImage(
+      base,
+      0,
+      0,
+    );
 
     const link =
       document.createElement('a');
 
     link.download =
-      'collabcanvas.png';
+      `collabcanvas-${workspaceId}.png`;
 
     link.href =
-      canvas.toDataURL(
+      exportCanvas.toDataURL(
         'image/png',
       );
 
     link.click();
   }
 
-  function exportPDF() {
+
+  function exportPdf() {
     const canvas =
       baseCanvasRef.current;
 
@@ -1137,233 +1075,207 @@ export default function CollaborativeCanvas({
         'image/png',
       );
 
-    const pdf =
+    const landscape =
+      canvas.width >=
+      canvas.height;
+
+    const doc =
       new jsPDF({
         orientation:
-          canvas.clientWidth >=
-          canvas.clientHeight
+          landscape
             ? 'landscape'
             : 'portrait',
-        unit: 'px',
-        format: [
-          canvas.clientWidth,
-          canvas.clientHeight,
-        ],
+        unit: 'mm',
+        format: 'a4',
       });
 
-    pdf.addImage(
+    const pageWidth =
+      landscape ? 297 : 210;
+
+    const pageHeight =
+      landscape ? 210 : 297;
+
+    const margin = 8;
+
+    const ratio =
+      canvas.width /
+      canvas.height;
+
+    const maxWidth =
+      pageWidth -
+      margin * 2;
+
+    const maxHeight =
+      pageHeight -
+      margin * 2;
+
+    let width =
+      maxWidth;
+
+    let height =
+      width / ratio;
+
+    if (height > maxHeight) {
+      height = maxHeight;
+      width =
+        height * ratio;
+    }
+
+    doc.addImage(
       image,
       'PNG',
-      0,
-      0,
-      canvas.clientWidth,
-      canvas.clientHeight,
+      (pageWidth - width) / 2,
+      (pageHeight - height) / 2,
+      width,
+      height,
+      undefined,
+      'FAST',
     );
 
-    pdf.save(
-      'collabcanvas.pdf',
+    doc.save(
+      `collabcanvas-${workspaceId}.pdf`,
     );
   }
+
+
+  if (loading) {
+    return (
+      <div className="canvas-loading">
+        Loading shared canvas…
+      </div>
+    );
+  }
+
 
   return (
     <div className="canvas-workspace">
       <div className="canvas-toolbar">
-        <button
-          type="button"
-          className={
-            tool === 'pen'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setTool('pen')
-          }
-        >
-          ✎ Pen
-        </button>
+        {[
+          'pen',
+          'eraser',
+          'line',
+          'rect',
+          'circle',
+          'text',
+        ].map((item) => (
+          <button
+            key={item}
+            className={
+              tool === item
+                ? 'active'
+                : ''
+            }
+            onClick={() =>
+              setTool(item)
+            }
+            title={
+              item === 'eraser'
+                ? 'Eraser'
+                : item === 'rect'
+                  ? 'Rectangle'
+                  : item === 'circle'
+                    ? 'Circle'
+                    : item === 'line'
+                      ? 'Line'
+                      : item === 'text'
+                        ? 'Text'
+                        : 'Pen'
+            }
+          >
+            {item === 'pen'
+              ? '✎'
+              : item === 'eraser'
+                ? '⌫'
+                : item === 'line'
+                  ? '╱'
+                  : item === 'rect'
+                    ? '▢'
+                    : item === 'circle'
+                      ? '○'
+                      : 'T'}
+          </button>
+        ))}
 
-        <button
-          type="button"
-          className={
-            tool === 'eraser'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setTool('eraser')
-          }
-        >
-          ⌫ Eraser
-        </button>
+        <div className="canvas-divider" />
 
-        <button
-          type="button"
-          className={
-            tool === 'line'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setTool('line')
-          }
-        >
-          ╱ Line
-        </button>
+        <div className="canvas-colors" aria-label="Choose drawing color">
+          {COLORS.map((item) => (
+            <button
+              key={item}
+              type="button"
+              className={`canvas-color ${
+                color === item ? 'selected' : ''
+              }`}
+              style={{ backgroundColor: item }}
+              onClick={() => {
+                setColor(item);
 
-        <button
-          type="button"
-          className={
-            tool === 'rect'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setTool('rect')
-          }
-        >
-          □ Rectangle
-        </button>
-
-        <button
-          type="button"
-          className={
-            tool === 'circle'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setTool('circle')
-          }
-        >
-          ○ Circle
-        </button>
-
-        <button
-          type="button"
-          className={
-            tool === 'text'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setTool('text')
-          }
-        >
-          T Text
-        </button>
-
-        <span className="canvas-divider" />
-
-        <div className="canvas-color">
-          {COLORS.map(
-            (item) => (
-              <button
-                key={item}
-                type="button"
-                aria-label={`Color ${item}`}
-                className={
-                  color === item
-                    ? 'active'
-                    : ''
+                if (tool === 'eraser') {
+                  setTool('pen');
                 }
-                style={{
-                  background:
-                    item,
-                }}
-                onClick={() =>
-                  setColor(item)
-                }
-              />
-            ),
-          )}
+              }}
+              aria-label={`Use color ${item}`}
+              title={`Color ${item}`}
+            />
+          ))}
         </div>
 
-        <select
-          className="canvas-size"
-          value={size}
-          onChange={(event) =>
-            setSize(
-              Number(
-                event.target.value,
-              ),
-            )
-          }
-        >
-          <option value={2}>
-            2px
-          </option>
-          <option value={4}>
-            4px
-          </option>
-          <option value={6}>
-            6px
-          </option>
-          <option value={10}>
-            10px
-          </option>
-          <option value={16}>
-            16px
-          </option>
-        </select>
+        <label className="canvas-size">
+          Size
 
-        <span className="canvas-divider" />
+          <input
+            type="range"
+            min="1"
+            max="24"
+            value={size}
+            onChange={(event) =>
+              setSize(
+                Number(
+                  event.target.value,
+                ),
+              )
+            }
+          />
+        </label>
 
-        <button
-          type="button"
-          onClick={exportPNG}
-        >
-          PNG
+        <span className="toolbar-spacer" />
+
+        {saving ? (
+          <span className="canvas-saving">
+            Saving…
+          </span>
+        ) : null}
+
+        <button onClick={exportPng}>
+          Export PNG
         </button>
 
-        <button
-          type="button"
-          onClick={exportPDF}
-        >
-          PDF
+        <button onClick={exportPdf}>
+          Export PDF
         </button>
 
-        {canClear && (
-          <button
-            type="button"
-            onClick={clearCanvas}
-          >
+        {canClear ? (
+          <button onClick={clearCanvas}>
             Clear
           </button>
-        )}
-
-        {saving && (
-          <span className="canvas-saving">
-            Saving...
-          </span>
-        )}
+        ) : null}
       </div>
 
-      {error && (
+      {error ? (
         <ErrorState
           message={error}
           onRetry={load}
         />
-      )}
+      ) : null}
 
-      <div
-        ref={stageRef}
-        className="canvas-stage"
-        onPointerCancel={
-          handleCancel
-        }
-      >
+      <div className="canvas-stage">
         <canvas
           ref={baseCanvasRef}
           className="canvas-base"
-          onPointerDown={
-            handleDown
-          }
-          onPointerMove={
-            handleMove
-          }
-          onPointerUp={
-            handleUp
-          }
+          onPointerDown={handleDown}
+          onPointerMove={handleMove}
+          onPointerUp={handleUp}
+          onPointerCancel={handleCancel}
         />
 
         <canvas
@@ -1371,27 +1283,18 @@ export default function CollaborativeCanvas({
           className="canvas-preview"
         />
 
-        {loading && (
-          <div className="canvas-loading">
-            Loading shared canvas...
-          </div>
-        )}
-
-        {textEditor && (
+        {textEditor ? (
           <div
             className="canvas-text-editor"
             style={{
-              left:
-                textEditor.left,
-              top:
-                textEditor.top,
+              left: textEditor.left,
+              top: textEditor.top,
             }}
           >
             <input
               ref={textRef}
-              value={
-                textEditor.text
-              }
+              value={textEditor.text}
+              placeholder="Type your note…"
               onChange={(event) =>
                 setTextEditor(
                   (current) => ({
@@ -1401,37 +1304,16 @@ export default function CollaborativeCanvas({
                   }),
                 )
               }
-              onKeyDown={(event) => {
-                if (
-                  event.key ===
-                  'Enter'
-                ) {
-                  event.preventDefault();
-                  void submitText();
-                }
-
-                if (
-                  event.key ===
-                  'Escape'
-                ) {
-                  setTextEditor(
-                    null,
-                  );
-                }
-              }}
-              placeholder="Type..."
+              onKeyDown={
+                handleTextKeyDown
+              }
             />
 
-            <button
-              type="button"
-              onClick={() =>
-                void submitText()
-              }
-            >
-              Add
-            </button>
+            <small>
+              Enter to add · Esc to cancel
+            </small>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
