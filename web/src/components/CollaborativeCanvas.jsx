@@ -26,7 +26,7 @@ const COLORS = [
   '#ec4899',
 ];
 
-function setupCanvas(canvas, width, height) {
+function configureCanvas(canvas, width, height) {
   if (!canvas) return;
 
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
@@ -74,14 +74,10 @@ function drawAction(context, action) {
   context.lineJoin = 'round';
   context.lineWidth = size;
 
-  if (type === 'pen') {
-    if (!points || points.length < 2) {
-      context.restore();
-      return;
-    }
-
+  if (type === 'pen' && points?.length > 1) {
     context.globalCompositeOperation = 'source-over';
     context.strokeStyle = color;
+
     context.beginPath();
     context.moveTo(points[0].x, points[0].y);
 
@@ -92,14 +88,8 @@ function drawAction(context, action) {
     context.stroke();
   }
 
-  if (type === 'eraser') {
-    if (!points || points.length < 2) {
-      context.restore();
-      return;
-    }
-
+  if (type === 'eraser' && points?.length > 1) {
     context.globalCompositeOperation = 'destination-out';
-    context.strokeStyle = '#000';
     context.beginPath();
     context.moveTo(points[0].x, points[0].y);
 
@@ -113,6 +103,7 @@ function drawAction(context, action) {
   if (type === 'line') {
     context.globalCompositeOperation = 'source-over';
     context.strokeStyle = color;
+
     context.beginPath();
     context.moveTo(x, y);
     context.lineTo(x2, y2);
@@ -219,7 +210,7 @@ export default function CollaborativeCanvas({
     }
   }, []);
 
-  const resizeCanvas = useCallback(() => {
+  const resizeCanvases = useCallback(() => {
     const stage = stageRef.current;
     const baseCanvas = baseCanvasRef.current;
     const previewCanvas = previewCanvasRef.current;
@@ -229,22 +220,25 @@ export default function CollaborativeCanvas({
     const width = stage.clientWidth;
     const height = stage.clientHeight;
 
-    setupCanvas(baseCanvas, width, height);
-    setupCanvas(previewCanvas, width, height);
+    configureCanvas(baseCanvas, width, height);
+    configureCanvas(previewCanvas, width, height);
 
     renderBaseCanvas();
   }, [renderBaseCanvas]);
 
-  const getPoint = useCallback((event) => {
+  const getCanvasPoint = useCallback((event) => {
     const canvas = baseCanvasRef.current;
 
     if (!canvas) return null;
 
     const rect = canvas.getBoundingClientRect();
 
+    const scaleX = canvas.clientWidth / rect.width;
+    const scaleY = canvas.clientHeight / rect.height;
+
     return {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top,
+      x: (event.clientX - rect.left) * scaleX,
+      y: (event.clientY - rect.top) * scaleY,
     };
   }, []);
 
@@ -268,7 +262,7 @@ export default function CollaborativeCanvas({
         : [];
 
       const normalized = loaded.map((item) => ({
-        ...item.action,
+        ...(item.action || item),
         id: item.id,
       }));
 
@@ -293,10 +287,10 @@ export default function CollaborativeCanvas({
   }, [actions, renderBaseCanvas]);
 
   useEffect(() => {
-    resizeCanvas();
+    resizeCanvases();
 
     const observer = new ResizeObserver(() => {
-      resizeCanvas();
+      resizeCanvases();
     });
 
     if (stageRef.current) {
@@ -306,10 +300,10 @@ export default function CollaborativeCanvas({
     return () => {
       observer.disconnect();
     };
-  }, [resizeCanvas]);
+  }, [resizeCanvases]);
 
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!workspaceId) return undefined;
 
     const supabase = getSupabase();
 
@@ -357,10 +351,7 @@ export default function CollaborativeCanvas({
         (payload) => {
           const deletedId = payload?.old?.id;
 
-          if (!deletedId) {
-            void loadCanvas();
-            return;
-          }
+          if (!deletedId) return;
 
           const next = actionsRef.current.filter(
             (action) => action.id !== deletedId,
@@ -375,7 +366,7 @@ export default function CollaborativeCanvas({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [workspaceId, loadCanvas]);
+  }, [workspaceId]);
 
   const saveAction = useCallback(async (action) => {
     try {
@@ -391,7 +382,7 @@ export default function CollaborativeCanvas({
         },
       );
 
-      return result?.canvasAction || null;
+      return result?.canvasAction || result?.action || null;
     } catch (err) {
       setError(
         err.message || 'Unable to save drawing.',
@@ -406,7 +397,7 @@ export default function CollaborativeCanvas({
   const handlePointerDown = useCallback((event) => {
     if (event.button !== 0) return;
 
-    const point = getPoint(event);
+    const point = getCanvasPoint(event);
 
     if (!point) return;
 
@@ -465,7 +456,7 @@ export default function CollaborativeCanvas({
     };
   }, [
     color,
-    getPoint,
+    getCanvasPoint,
     saveAction,
     size,
     tool,
@@ -474,7 +465,7 @@ export default function CollaborativeCanvas({
   const handlePointerMove = useCallback((event) => {
     if (!drawingRef.current) return;
 
-    const point = getPoint(event);
+    const point = getCanvasPoint(event);
 
     if (!point) return;
 
@@ -521,13 +512,19 @@ export default function CollaborativeCanvas({
 
     const context = previewCanvas.getContext('2d');
 
-    clearCanvas(previewCanvas);
+    context.clearRect(
+      0,
+      0,
+      previewCanvas.clientWidth,
+      previewCanvas.clientHeight,
+    );
+
     drawAction(context, action);
 
     lastPointRef.current = point;
   }, [
     color,
-    getPoint,
+    getCanvasPoint,
     size,
     tool,
   ]);
@@ -575,20 +572,7 @@ export default function CollaborativeCanvas({
 
     setActions([...actionsRef.current]);
 
-    const saved = await saveAction(action);
-
-    if (saved?.id) {
-      const index = actionsRef.current.length - 1;
-
-      const updated = {
-        ...actionsRef.current[index],
-        id: saved.id,
-      };
-
-      actionsRef.current[index] = updated;
-
-      setActions([...actionsRef.current]);
-    }
+    void saveAction(action);
   }, [
     clearPreview,
     saveAction,
@@ -679,15 +663,13 @@ export default function CollaborativeCanvas({
             key={item.id}
             type="button"
             className={
-              tool === item.id
-                ? 'active'
-                : ''
+              tool === item.id ? 'active' : ''
             }
             onClick={() => setTool(item.id)}
             title={item.label}
           >
-            {item.icon}
-            {item.label}
+            <span>{item.icon}</span>
+            <span>{item.label}</span>
           </button>
         ))}
 
@@ -713,7 +695,8 @@ export default function CollaborativeCanvas({
         <span className="canvas-divider" />
 
         <label className="canvas-size">
-          Size
+          <span>Size</span>
+
           <input
             type="range"
             min="1"
@@ -725,6 +708,7 @@ export default function CollaborativeCanvas({
               )
             }
           />
+
           <span>{size}px</span>
         </label>
 
@@ -762,7 +746,7 @@ export default function CollaborativeCanvas({
 
       {error && (
         <div className="error-state">
-          {error}
+          <span>{error}</span>
         </div>
       )}
 
@@ -795,6 +779,7 @@ export default function CollaborativeCanvas({
         <span>
           {saving ? 'Saving...' : 'Saved'}
         </span>
+
         <span>
           {actions.length}{' '}
           {actions.length === 1
