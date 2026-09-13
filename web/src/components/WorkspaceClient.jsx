@@ -197,6 +197,27 @@ export default function WorkspaceClient({ workspaceId }) {
     }
   }
 
+  async function deleteWorkspace() {
+    if (!workspace || !isOwner || busy) return;
+
+    const confirmed = window.confirm(
+      `Delete “${workspace.name}” permanently? This will remove all ideas, votes, canvas actions, and members. This cannot be undone.`,
+    );
+
+    if (!confirmed) return;
+
+    setBusy(true);
+    setWorkspaceError('');
+
+    try {
+      await apiFetch(`/workspaces/${workspaceId}`, { method: 'DELETE' });
+      router.replace('/dashboard');
+    } catch (deleteError) {
+      setWorkspaceError(deleteError.message || 'Unable to delete workspace.');
+      setBusy(false);
+    }
+  }
+
   async function deleteIdea(idea) {
     if (!window.confirm(`Delete “${idea.title}”?`)) return;
 
@@ -316,6 +337,16 @@ export default function WorkspaceClient({ workspaceId }) {
                 >
                   Copy ID
                 </button>
+                {isOwner ? (
+                  <button
+                    type="button"
+                    className="mini-button danger-mini-button"
+                    onClick={() => void deleteWorkspace()}
+                    disabled={busy}
+                  >
+                    {busy ? 'Deleting…' : 'Delete workspace'}
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
