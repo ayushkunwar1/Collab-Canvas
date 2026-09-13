@@ -2,254 +2,525 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
-import { getSupabase } from '@/lib/supabase';
 import { apiFetch } from '@/lib/api';
-
-const TOOLS = [
-  { id: 'pen', label: 'Pen', icon: '✎' },
-  { id: 'eraser', label: 'Eraser', icon: '⌫' },
-  { id: 'line', label: 'Line', icon: '╱' },
-  { id: 'rectangle', label: 'Rectangle', icon: '▭' },
-  { id: 'circle', label: 'Circle', icon: '○' },
-  { id: 'text', label: 'Text', icon: 'T' },
-];
+import { getSupabase } from '@/lib/supabase';
+import { useAuth } from './AuthProvider';
+import { ErrorState } from './ErrorState';
 
 const COLORS = [
-  '#111827',
-  '#ef4444',
-  '#f97316',
-  '#eab308',
-  '#22c55e',
-  '#06b6d4',
-  '#3b82f6',
-  '#8b5cf6',
-  '#ec4899',
+  '#0f172a',
+  '#2563eb',
+  '#7c3aed',
+  '#db2777',
+  '#dc2626',
+  '#16a34a',
+  '#ca8a04',
 ];
 
-function configureCanvas(canvas, width, height) {
-  if (!canvas) return;
-
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-
-  canvas.width = Math.max(1, Math.round(width * ratio));
-  canvas.height = Math.max(1, Math.round(height * ratio));
-
-  const context = canvas.getContext('2d');
-
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  context.lineCap = 'round';
-  context.lineJoin = 'round';
-}
-
-function clearCanvas(canvas) {
-  if (!canvas) return;
-
-  const context = canvas.getContext('2d');
-
-  context.clearRect(
-    0,
-    0,
-    canvas.clientWidth,
-    canvas.clientHeight,
+function uid() {
+  return (
+    globalThis.crypto?.randomUUID?.() ||
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`
   );
 }
 
-function drawAction(context, action) {
-  if (!context || !action) return;
+function getPoint(event, canvas) {
+  const rect = canvas.getBoundingClientRect();
 
-  const {
-    type,
-    x,
-    y,
-    x2,
-    y2,
-    points,
-    color = '#111827',
-    size = 4,
-    text,
-  } = action;
-
-  context.save();
-  context.lineCap = 'round';
-  context.lineJoin = 'round';
-  context.lineWidth = size;
-
-  if (type === 'pen' && points?.length > 1) {
-    context.globalCompositeOperation = 'source-over';
-    context.strokeStyle = color;
-
-    context.beginPath();
-    context.moveTo(points[0].x, points[0].y);
-
-    for (let i = 1; i < points.length; i += 1) {
-      context.lineTo(points[i].x, points[i].y);
-    }
-
-    context.stroke();
+  if (!rect.width || !rect.height) {
+    return { x: 0, y: 0 };
   }
 
-  if (type === 'eraser' && points?.length > 1) {
-    context.globalCompositeOperation = 'destination-out';
-    context.beginPath();
-    context.moveTo(points[0].x, points[0].y);
-
-    for (let i = 1; i < points.length; i += 1) {
-      context.lineTo(points[i].x, points[i].y);
-    }
-
-    context.stroke();
-  }
-
-  if (type === 'line') {
-    context.globalCompositeOperation = 'source-over';
-    context.strokeStyle = color;
-
-    context.beginPath();
-    context.moveTo(x, y);
-    context.lineTo(x2, y2);
-    context.stroke();
-  }
-
-  if (type === 'rectangle') {
-    context.globalCompositeOperation = 'source-over';
-    context.strokeStyle = color;
-
-    context.strokeRect(
-      Math.min(x, x2),
-      Math.min(y, y2),
-      Math.abs(x2 - x),
-      Math.abs(y2 - y),
-    );
-  }
-
-  if (type === 'circle') {
-    context.globalCompositeOperation = 'source-over';
-    context.strokeStyle = color;
-
-    const radius = Math.sqrt(
-      (x2 - x) ** 2 + (y2 - y) ** 2,
-    );
-
-    context.beginPath();
-    context.arc(x, y, radius, 0, Math.PI * 2);
-    context.stroke();
-  }
-
-  if (type === 'text' && text) {
-    context.globalCompositeOperation = 'source-over';
-    context.fillStyle = color;
-    context.font = `${Math.max(size * 5, 18)}px sans-serif`;
-    context.textBaseline = 'top';
-    context.fillText(text, x, y);
-  }
-
-  context.restore();
+  return {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
 }
 
-function drawSegment(context, type, from, to, color, size) {
-  if (!context || !from || !to) return;
+function configureCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
 
-  context.save();
-  context.lineCap = 'round';
-  context.lineJoin = 'round';
-  context.lineWidth = size;
-
-  if (type === 'eraser') {
-    context.globalCompositeOperation = 'destination-out';
-    context.strokeStyle = '#000';
-  } else {
-    context.globalCompositeOperation = 'source-over';
-    context.strokeStyle = color;
+  if (!rect.width || !rect.height) {
+    return null;
   }
 
-  context.beginPath();
-  context.moveTo(from.x, from.y);
-  context.lineTo(to.x, to.y);
-  context.stroke();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
 
-  context.restore();
+  const pixelWidth = Math.round(width * dpr);
+  const pixelHeight = Math.round(height * dpr);
+
+  if (
+    canvas.width !== pixelWidth ||
+    canvas.height !== pixelHeight
+  ) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+
+  const ctx = canvas.getContext('2d');
+
+  if (!ctx) {
+    return null;
+  }
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  return {
+    ctx,
+    width,
+    height,
+    dpr,
+  };
+}
+
+function normalizePoint(point, width, height) {
+  return {
+    x: width ? point.x / width : 0,
+    y: height ? point.y / height : 0,
+  };
+}
+
+function denormalizePoint(point, width, height) {
+  return {
+    x: point.x * width,
+    y: point.y * height,
+  };
+}
+
+function normalizeAction(action, width, height) {
+  if (!action) return null;
+
+  const type = action.type;
+
+  if (type === 'stroke' || type === 'eraser') {
+    const points = action.points || [];
+
+    return {
+      ...action,
+      points: points.map((point) => {
+        if (
+          point.x >= 0 &&
+          point.x <= 1 &&
+          point.y >= 0 &&
+          point.y <= 1
+        ) {
+          return point;
+        }
+
+        return normalizePoint(point, width, height);
+      }),
+    };
+  }
+
+  if (
+    type === 'line' ||
+    type === 'rect' ||
+    type === 'circle'
+  ) {
+    if (!action.start || !action.end) {
+      return action;
+    }
+
+    const normalizedStart =
+      action.start.x >= 0 &&
+      action.start.x <= 1 &&
+      action.start.y >= 0 &&
+      action.start.y <= 1
+        ? action.start
+        : normalizePoint(action.start, width, height);
+
+    const normalizedEnd =
+      action.end.x >= 0 &&
+      action.end.x <= 1 &&
+      action.end.y >= 0 &&
+      action.end.y <= 1
+        ? action.end
+        : normalizePoint(action.end, width, height);
+
+    return {
+      ...action,
+      start: normalizedStart,
+      end: normalizedEnd,
+    };
+  }
+
+  if (type === 'text') {
+    return {
+      ...action,
+      x:
+        action.x >= 0 && action.x <= 1
+          ? action.x
+          : width
+            ? action.x / width
+            : 0,
+      y:
+        action.y >= 0 && action.y <= 1
+          ? action.y
+          : height
+            ? action.y / height
+            : 0,
+    };
+  }
+
+  return action;
+}
+
+function drawAction(ctx, action, width, height) {
+  if (!ctx || !action) return;
+
+  ctx.save();
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (
+    action.type === 'stroke' ||
+    action.type === 'eraser'
+  ) {
+    const points = action.points || [];
+
+    if (!points.length) {
+      ctx.restore();
+      return;
+    }
+
+    const size = Math.max(1, action.size || 4);
+
+    ctx.lineWidth = size;
+
+    if (action.type === 'eraser') {
+      ctx.globalCompositeOperation = 'destination-out';
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = action.color || '#0f172a';
+      ctx.fillStyle = action.color || '#0f172a';
+    }
+
+    const first = denormalizePoint(
+      points[0],
+      width,
+      height,
+    );
+
+    if (points.length === 1) {
+      ctx.beginPath();
+      ctx.arc(
+        first.x,
+        first.y,
+        Math.max(1, size / 2),
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(first.x, first.y);
+
+      for (let i = 1; i < points.length; i += 1) {
+        const point = denormalizePoint(
+          points[i],
+          width,
+          height,
+        );
+
+        ctx.lineTo(point.x, point.y);
+      }
+
+      ctx.stroke();
+    }
+
+    ctx.restore();
+    return;
+  }
+
+  if (
+    action.type === 'line' ||
+    action.type === 'rect' ||
+    action.type === 'circle'
+  ) {
+    if (!action.start || !action.end) {
+      ctx.restore();
+      return;
+    }
+
+    const start = denormalizePoint(
+      action.start,
+      width,
+      height,
+    );
+
+    const end = denormalizePoint(
+      action.end,
+      width,
+      height,
+    );
+
+    const x1 = start.x;
+    const y1 = start.y;
+    const x2 = end.x;
+    const y2 = end.y;
+
+    const w = x2 - x1;
+    const h = y2 - y1;
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = action.color || '#0f172a';
+    ctx.lineWidth = Math.max(1, action.size || 4);
+
+    if (action.type === 'line') {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    if (action.type === 'rect') {
+      ctx.strokeRect(
+        Math.min(x1, x2),
+        Math.min(y1, y2),
+        Math.abs(w),
+        Math.abs(h),
+      );
+    }
+
+    if (action.type === 'circle') {
+      ctx.beginPath();
+
+      ctx.ellipse(
+        x1 + w / 2,
+        y1 + h / 2,
+        Math.abs(w / 2),
+        Math.abs(h / 2),
+        0,
+        0,
+        Math.PI * 2,
+      );
+
+      ctx.stroke();
+    }
+
+    ctx.restore();
+    return;
+  }
+
+  if (action.type === 'text') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = action.color || '#0f172a';
+
+    ctx.font = `500 ${
+      Math.max(14, action.fontSize || 22)
+    }px Inter, system-ui, sans-serif`;
+
+    ctx.textBaseline = 'top';
+
+    ctx.fillText(
+      action.text || '',
+      action.x * width,
+      action.y * height,
+    );
+  }
+
+  ctx.restore();
+}
+
+function clearCanvas(canvas, width, height) {
+  const ctx = canvas.getContext('2d');
+
+  if (!ctx) return;
+
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+}
+
+function renderBaseCanvas(canvas, actions) {
+  const result = configureCanvas(canvas);
+
+  if (!result) return;
+
+  const {
+    ctx,
+    width,
+    height,
+  } = result;
+
+  clearCanvas(canvas, width, height);
+
+  for (const item of actions) {
+    const action = item.action || item;
+
+    drawAction(
+      ctx,
+      action,
+      width,
+      height,
+    );
+  }
+}
+
+function drawSegment(
+  canvas,
+  from,
+  to,
+  color,
+  size,
+  eraser,
+) {
+  const result = configureCanvas(canvas);
+
+  if (!result) return;
+
+  const {
+    ctx,
+  } = result;
+
+  ctx.save();
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(1, size);
+
+  if (eraser) {
+    ctx.globalCompositeOperation =
+      'destination-out';
+  } else {
+    ctx.globalCompositeOperation =
+      'source-over';
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+  }
+
+  if (
+    from.x === to.x &&
+    from.y === to.y
+  ) {
+    ctx.beginPath();
+
+    ctx.arc(
+      from.x,
+      from.y,
+      Math.max(1, size / 2),
+      0,
+      Math.PI * 2,
+    );
+
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawPreviewShape(
+  canvas,
+  drawing,
+  point,
+  color,
+  size,
+) {
+  const result = configureCanvas(canvas);
+
+  if (!result) return;
+
+  const {
+    ctx,
+    width,
+    height,
+  } = result;
+
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.save();
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(1, size);
+  ctx.strokeStyle = color;
+
+  const x1 = drawing.start.x;
+  const y1 = drawing.start.y;
+  const x2 = point.x;
+  const y2 = point.y;
+
+  const w = x2 - x1;
+  const h = y2 - y1;
+
+  if (drawing.kind === 'line') {
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  if (drawing.kind === 'rect') {
+    ctx.strokeRect(
+      Math.min(x1, x2),
+      Math.min(y1, y2),
+      Math.abs(w),
+      Math.abs(h),
+    );
+  }
+
+  if (drawing.kind === 'circle') {
+    ctx.beginPath();
+
+    ctx.ellipse(
+      x1 + w / 2,
+      y1 + h / 2,
+      Math.abs(w / 2),
+      Math.abs(h / 2),
+      0,
+      0,
+      Math.PI * 2,
+    );
+
+    ctx.stroke();
+  }
+
+  ctx.restore();
 }
 
 export default function CollaborativeCanvas({
   workspaceId,
   canClear = false,
 }) {
+  const { user } = useAuth();
+
   const baseCanvasRef = useRef(null);
   const previewCanvasRef = useRef(null);
   const stageRef = useRef(null);
 
+  const drawingRef = useRef(null);
+  const textRef = useRef(null);
   const actionsRef = useRef([]);
-  const drawingRef = useRef(false);
-  const currentActionRef = useRef(null);
-  const lastPointRef = useRef(null);
 
   const [actions, setActions] = useState([]);
   const [tool, setTool] = useState('pen');
-  const [color, setColor] = useState('#111827');
+  const [color, setColor] = useState('#0f172a');
   const [size, setSize] = useState(4);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
 
-  const renderBaseCanvas = useCallback(() => {
-    const canvas = baseCanvasRef.current;
+  const [loading, setLoading] =
+    useState(true);
+  const [error, setError] =
+    useState('');
+  const [saving, setSaving] =
+    useState(false);
+  const [textEditor, setTextEditor] =
+    useState(null);
 
-    if (!canvas) return;
+  useEffect(() => {
+    actionsRef.current = actions;
+  }, [actions]);
 
-    const context = canvas.getContext('2d');
-
-    context.clearRect(
-      0,
-      0,
-      canvas.clientWidth,
-      canvas.clientHeight,
-    );
-
-    for (const action of actionsRef.current) {
-      drawAction(context, action);
-    }
-  }, []);
-
-  const resizeCanvases = useCallback(() => {
-    const stage = stageRef.current;
-    const baseCanvas = baseCanvasRef.current;
-    const previewCanvas = previewCanvasRef.current;
-
-    if (!stage || !baseCanvas || !previewCanvas) return;
-
-    const width = stage.clientWidth;
-    const height = stage.clientHeight;
-
-    configureCanvas(baseCanvas, width, height);
-    configureCanvas(previewCanvas, width, height);
-
-    renderBaseCanvas();
-  }, [renderBaseCanvas]);
-
-  const getCanvasPoint = useCallback((event) => {
-    const canvas = baseCanvasRef.current;
-
-    if (!canvas) return null;
-
-    const rect = canvas.getBoundingClientRect();
-
-    const scaleX = canvas.clientWidth / rect.width;
-    const scaleY = canvas.clientHeight / rect.height;
-
-    return {
-      x: (event.clientX - rect.left) * scaleX,
-      y: (event.clientY - rect.top) * scaleY,
-    };
-  }, []);
-
-  const clearPreview = useCallback(() => {
-    clearCanvas(previewCanvasRef.current);
-  }, []);
-
-  const loadCanvas = useCallback(async () => {
-    if (!workspaceId) return;
-
-    setLoading(true);
+  const load = useCallback(async () => {
     setError('');
 
     try {
@@ -257,20 +528,45 @@ export default function CollaborativeCanvas({
         `/canvas/workspace/${workspaceId}`,
       );
 
-      const loaded = Array.isArray(result?.actions)
-        ? result.actions
-        : [];
+      const canvas =
+        baseCanvasRef.current;
 
-      const normalized = loaded.map((item) => ({
-        ...(item.action || item),
-        id: item.id,
-      }));
+      let width = 1;
+      let height = 1;
 
-      actionsRef.current = normalized;
-      setActions(normalized);
-    } catch (err) {
+      if (canvas) {
+        const rect =
+          canvas.getBoundingClientRect();
+
+        width = rect.width || 1;
+        height = rect.height || 1;
+      }
+
+      const nextActions =
+        (result.actions || [])
+          .map((item) => {
+            const action =
+              item.action || item;
+
+            return {
+              ...item,
+              action:
+                normalizeAction(
+                  action,
+                  width,
+                  height,
+                ),
+            };
+          });
+
+      actionsRef.current =
+        nextActions;
+
+      setActions(nextActions);
+    } catch (loadError) {
       setError(
-        err.message || 'Unable to load canvas.',
+        loadError.message ||
+          'Unable to load the shared canvas.',
       );
     } finally {
       setLoading(false);
@@ -278,66 +574,56 @@ export default function CollaborativeCanvas({
   }, [workspaceId]);
 
   useEffect(() => {
-    loadCanvas();
-  }, [loadCanvas]);
-
-  useEffect(() => {
-    actionsRef.current = actions;
-    renderBaseCanvas();
-  }, [actions, renderBaseCanvas]);
-
-  useEffect(() => {
-    resizeCanvases();
-
-    const observer = new ResizeObserver(() => {
-      resizeCanvases();
-    });
-
-    if (stageRef.current) {
-      observer.observe(stageRef.current);
+    if (user) {
+      void load();
     }
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [resizeCanvases]);
+  }, [user, load]);
 
   useEffect(() => {
-    if (!workspaceId) return undefined;
+    if (!user) return undefined;
 
     const supabase = getSupabase();
 
     const channel = supabase
-      .channel(`canvas-${workspaceId}`)
+      .channel(
+        `canvas-live-${workspaceId}`,
+      )
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'canvas_actions',
-          filter: `workspace_id=eq.${workspaceId}`,
+          filter:
+            `workspace_id=eq.${workspaceId}`,
         },
         (payload) => {
-          const incoming = payload?.new;
+          const incoming =
+            payload.new;
 
-          if (!incoming?.action) return;
+          if (!incoming) return;
 
-          const exists = actionsRef.current.some(
-            (action) => action.id === incoming.id,
-          );
+          setActions((current) => {
+            if (
+              current.some(
+                (item) =>
+                  item.id ===
+                  incoming.id,
+              )
+            ) {
+              return current;
+            }
 
-          if (exists) return;
+            const next = [
+              ...current,
+              incoming,
+            ];
 
-          const next = [
-            ...actionsRef.current,
-            {
-              ...incoming.action,
-              id: incoming.id,
-            },
-          ];
+            actionsRef.current =
+              next;
 
-          actionsRef.current = next;
-          setActions(next);
+            return next;
+          });
         },
       )
       .on(
@@ -346,33 +632,128 @@ export default function CollaborativeCanvas({
           event: 'DELETE',
           schema: 'public',
           table: 'canvas_actions',
-          filter: `workspace_id=eq.${workspaceId}`,
+          filter:
+            `workspace_id=eq.${workspaceId}`,
         },
         (payload) => {
-          const deletedId = payload?.old?.id;
+          const deletedId =
+            payload.old?.id;
 
-          if (!deletedId) return;
+          if (!deletedId) {
+            void load();
+            return;
+          }
 
-          const next = actionsRef.current.filter(
-            (action) => action.id !== deletedId,
-          );
+          setActions((current) => {
+            const next =
+              current.filter(
+                (item) =>
+                  item.id !==
+                  deletedId,
+              );
 
-          actionsRef.current = next;
-          setActions(next);
+            actionsRef.current =
+              next;
+
+            return next;
+          });
         },
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(
+        channel,
+      );
     };
-  }, [workspaceId]);
+  }, [
+    workspaceId,
+    user,
+    load,
+  ]);
 
-  const saveAction = useCallback(async (action) => {
+  const redraw = useCallback(() => {
+    const base =
+      baseCanvasRef.current;
+
+    const preview =
+      previewCanvasRef.current;
+
+    if (base) {
+      renderBaseCanvas(
+        base,
+        actionsRef.current,
+      );
+    }
+
+    if (preview) {
+      const result =
+        configureCanvas(preview);
+
+      if (result) {
+        result.ctx.clearRect(
+          0,
+          0,
+          result.width,
+          result.height,
+        );
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const stage =
+      stageRef.current;
+
+    if (!stage) return undefined;
+
+    redraw();
+
+    const observer =
+      new ResizeObserver(() => {
+        redraw();
+      });
+
+    observer.observe(stage);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [redraw]);
+
+  useEffect(() => {
+    if (!textEditor) return;
+
+    requestAnimationFrame(() => {
+      textRef.current?.focus();
+    });
+  }, [textEditor]);
+
+  async function saveAction(action) {
+    const localId =
+      `local-${uid()}`;
+
+    const optimisticAction = {
+      id: localId,
+      action,
+    };
+
+    setActions((current) => {
+      const next = [
+        ...current,
+        optimisticAction,
+      ];
+
+      actionsRef.current =
+        next;
+
+      return next;
+    });
+
+    setSaving(true);
+
     try {
-      setSaving(true);
-
-      const result = await apiFetch(
+      await apiFetch(
         `/canvas/workspace/${workspaceId}`,
         {
           method: 'POST',
@@ -381,209 +762,319 @@ export default function CollaborativeCanvas({
           }),
         },
       );
-
-      return result?.canvasAction || result?.action || null;
-    } catch (err) {
+    } catch (saveError) {
       setError(
-        err.message || 'Unable to save drawing.',
+        saveError.message ||
+          'Unable to save canvas action.',
       );
 
-      return null;
+      await load();
     } finally {
       setSaving(false);
     }
-  }, [workspaceId]);
+  }
 
-  const handlePointerDown = useCallback((event) => {
+  function clearPreview() {
+    const preview =
+      previewCanvasRef.current;
+
+    if (!preview) return;
+
+    const result =
+      configureCanvas(preview);
+
+    if (!result) return;
+
+    result.ctx.clearRect(
+      0,
+      0,
+      result.width,
+      result.height,
+    );
+  }
+
+  function handleDown(event) {
     if (event.button !== 0) return;
 
-    const point = getCanvasPoint(event);
+    const canvas =
+      baseCanvasRef.current;
 
-    if (!point) return;
+    if (!canvas) return;
 
-    event.currentTarget.setPointerCapture?.(
+    const point =
+      getPoint(event, canvas);
+
+    if (tool === 'text') {
+      const rect =
+        canvas.getBoundingClientRect();
+
+      setTextEditor({
+        x: point.x,
+        y: point.y,
+        left:
+          event.clientX -
+          rect.left,
+        top:
+          event.clientY -
+          rect.top,
+        text: '',
+      });
+
+      return;
+    }
+
+    canvas.setPointerCapture?.(
       event.pointerId,
     );
 
-    if (tool === 'text') {
-      const text = window.prompt('Enter text');
-
-      if (!text?.trim()) return;
-
-      const action = {
-        type: 'text',
-        x: point.x,
-        y: point.y,
-        text: text.trim(),
-        color,
-        size,
-      };
-
-      actionsRef.current = [
-        ...actionsRef.current,
-        action,
-      ];
-
-      setActions([...actionsRef.current]);
-
-      void saveAction(action);
-
-      return;
-    }
-
-    drawingRef.current = true;
-    lastPointRef.current = point;
-
-    if (tool === 'pen' || tool === 'eraser') {
-      currentActionRef.current = {
-        type: tool,
-        color,
-        size,
+    if (
+      tool === 'pen' ||
+      tool === 'eraser'
+    ) {
+      drawingRef.current = {
+        kind: tool,
         points: [point],
+        lastPoint: point,
       };
-
-      return;
-    }
-
-    currentActionRef.current = {
-      type: tool,
-      x: point.x,
-      y: point.y,
-      x2: point.x,
-      y2: point.y,
-      color,
-      size,
-    };
-  }, [
-    color,
-    getCanvasPoint,
-    saveAction,
-    size,
-    tool,
-  ]);
-
-  const handlePointerMove = useCallback((event) => {
-    if (!drawingRef.current) return;
-
-    const point = getCanvasPoint(event);
-
-    if (!point) return;
-
-    const previous = lastPointRef.current;
-
-    if (!previous) {
-      lastPointRef.current = point;
-      return;
-    }
-
-    if (tool === 'pen' || tool === 'eraser') {
-      const action = currentActionRef.current;
-
-      if (!action) return;
-
-      action.points.push(point);
-
-      const context =
-        baseCanvasRef.current?.getContext('2d');
 
       drawSegment(
-        context,
-        tool,
+        canvas,
+        point,
+        point,
+        color,
+        size,
+        tool === 'eraser',
+      );
+
+      return;
+    }
+
+    if (
+      tool === 'line' ||
+      tool === 'rect' ||
+      tool === 'circle'
+    ) {
+      drawingRef.current = {
+        kind: tool,
+        start: point,
+        lastPoint: point,
+      };
+
+      clearPreview();
+    }
+  }
+
+  function handleMove(event) {
+    const drawing =
+      drawingRef.current;
+
+    const canvas =
+      baseCanvasRef.current;
+
+    if (!drawing || !canvas) {
+      return;
+    }
+
+    const point =
+      getPoint(event, canvas);
+
+    if (
+      drawing.kind === 'pen' ||
+      drawing.kind === 'eraser'
+    ) {
+      const previous =
+        drawing.lastPoint;
+
+      drawing.points.push(point);
+      drawing.lastPoint = point;
+
+      drawSegment(
+        canvas,
         previous,
         point,
         color,
         size,
+        drawing.kind === 'eraser',
       );
 
-      lastPointRef.current = point;
       return;
     }
 
-    const action = currentActionRef.current;
+    if (
+      drawing.kind === 'line' ||
+      drawing.kind === 'rect' ||
+      drawing.kind === 'circle'
+    ) {
+      drawing.lastPoint = point;
 
-    if (!action) return;
+      const preview =
+        previewCanvasRef.current;
 
-    action.x2 = point.x;
-    action.y2 = point.y;
+      if (!preview) return;
 
-    const previewCanvas = previewCanvasRef.current;
+      drawPreviewShape(
+        preview,
+        drawing,
+        point,
+        color,
+        size,
+      );
+    }
+  }
 
-    if (!previewCanvas) return;
+  async function handleUp(event) {
+    const drawing =
+      drawingRef.current;
 
-    const context = previewCanvas.getContext('2d');
+    const canvas =
+      baseCanvasRef.current;
 
-    context.clearRect(
-      0,
-      0,
-      previewCanvas.clientWidth,
-      previewCanvas.clientHeight,
-    );
+    if (!drawing || !canvas) {
+      return;
+    }
 
-    drawAction(context, action);
+    const point =
+      getPoint(event, canvas);
 
-    lastPointRef.current = point;
-  }, [
-    color,
-    getCanvasPoint,
-    size,
-    tool,
-  ]);
+    drawingRef.current = null;
 
-  const handlePointerUp = useCallback(async (event) => {
-    if (!drawingRef.current) return;
-
-    drawingRef.current = false;
-
-    event.currentTarget.releasePointerCapture?.(
+    canvas.releasePointerCapture?.(
       event.pointerId,
     );
 
-    const action = currentActionRef.current;
+    const rect =
+      canvas.getBoundingClientRect();
 
-    currentActionRef.current = null;
-    lastPointRef.current = null;
+    const width =
+      rect.width || 1;
 
+    const height =
+      rect.height || 1;
+
+    if (
+      drawing.kind === 'pen' ||
+      drawing.kind === 'eraser'
+    ) {
+      drawing.points.push(point);
+
+      const normalizedPoints =
+        drawing.points.map(
+          (item) =>
+            normalizePoint(
+              item,
+              width,
+              height,
+            ),
+        );
+
+      await saveAction({
+        id: uid(),
+        type:
+          drawing.kind === 'eraser'
+            ? 'eraser'
+            : 'stroke',
+        points:
+          normalizedPoints,
+        ...(drawing.kind === 'pen'
+          ? { color }
+          : {}),
+        size,
+      });
+
+      return;
+    }
+
+    if (
+      drawing.kind === 'line' ||
+      drawing.kind === 'rect' ||
+      drawing.kind === 'circle'
+    ) {
+      const normalizedStart =
+        normalizePoint(
+          drawing.start,
+          width,
+          height,
+        );
+
+      const normalizedEnd =
+        normalizePoint(
+          point,
+          width,
+          height,
+        );
+
+      clearPreview();
+
+      await saveAction({
+        id: uid(),
+        type: drawing.kind,
+        start: normalizedStart,
+        end: normalizedEnd,
+        color,
+        size,
+      });
+    }
+  }
+
+  function handleCancel() {
+    drawingRef.current = null;
     clearPreview();
+  }
 
-    if (!action) return;
+  async function submitText() {
+    if (!textEditor) return;
 
+    const text =
+      textEditor.text.trim();
+
+    if (!text) {
+      setTextEditor(null);
+      return;
+    }
+
+    const canvas =
+      baseCanvasRef.current;
+
+    if (!canvas) return;
+
+    const rect =
+      canvas.getBoundingClientRect();
+
+    const width =
+      rect.width || 1;
+
+    const height =
+      rect.height || 1;
+
+    await saveAction({
+      id: uid(),
+      type: 'text',
+      text,
+      x: textEditor.x / width,
+      y: textEditor.y / height,
+      color,
+      fontSize: Math.max(
+        14,
+        size * 4,
+      ),
+    });
+
+    setTextEditor(null);
+  }
+
+  async function clearCanvas() {
     if (
-      (action.type === 'pen' ||
-        action.type === 'eraser') &&
-      action.points.length < 2
+      !window.confirm(
+        'Clear the shared canvas for everyone?',
+      )
     ) {
       return;
     }
 
-    if (
-      (action.type === 'line' ||
-        action.type === 'rectangle' ||
-        action.type === 'circle') &&
-      action.x === action.x2 &&
-      action.y === action.y2
-    ) {
-      return;
-    }
-
-    actionsRef.current = [
-      ...actionsRef.current,
-      action,
-    ];
-
-    setActions([...actionsRef.current]);
-
-    void saveAction(action);
-  }, [
-    clearPreview,
-    saveAction,
-  ]);
-
-  const clearCanvasCompletely = useCallback(async () => {
-    if (!canClear) return;
+    setSaving(true);
+    setError('');
 
     try {
-      setError('');
-
       await apiFetch(
         `/canvas/workspace/${workspaceId}`,
         {
@@ -594,140 +1085,228 @@ export default function CollaborativeCanvas({
       actionsRef.current = [];
       setActions([]);
 
-      clearCanvas(baseCanvasRef.current);
       clearPreview();
-    } catch (err) {
-      setError(
-        err.message || 'Unable to clear canvas.',
-      );
-    }
-  }, [
-    canClear,
-    clearPreview,
-    workspaceId,
-  ]);
 
-  const exportPNG = useCallback(() => {
-    const canvas = baseCanvasRef.current;
+      const base =
+        baseCanvasRef.current;
+
+      if (base) {
+        renderBaseCanvas(
+          base,
+          [],
+        );
+      }
+    } catch (clearError) {
+      setError(
+        clearError.message ||
+          'Unable to clear the canvas.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function exportPNG() {
+    const canvas =
+      baseCanvasRef.current;
 
     if (!canvas) return;
 
-    const link = document.createElement('a');
+    const link =
+      document.createElement('a');
 
     link.download =
-      `collabcanvas-${workspaceId}.png`;
+      'collabcanvas.png';
 
-    link.href = canvas.toDataURL('image/png');
+    link.href =
+      canvas.toDataURL(
+        'image/png',
+      );
 
     link.click();
-  }, [workspaceId]);
+  }
 
-  const exportPDF = useCallback(() => {
-    const canvas = baseCanvasRef.current;
+  function exportPDF() {
+    const canvas =
+      baseCanvasRef.current;
 
     if (!canvas) return;
 
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
+    const image =
+      canvas.toDataURL(
+        'image/png',
+      );
 
-    const image = canvas.toDataURL('image/png');
-
-    const pdf = new jsPDF({
-      orientation:
-        width >= height
-          ? 'landscape'
-          : 'portrait',
-      unit: 'px',
-      format: [width, height],
-    });
+    const pdf =
+      new jsPDF({
+        orientation:
+          canvas.clientWidth >=
+          canvas.clientHeight
+            ? 'landscape'
+            : 'portrait',
+        unit: 'px',
+        format: [
+          canvas.clientWidth,
+          canvas.clientHeight,
+        ],
+      });
 
     pdf.addImage(
       image,
       'PNG',
       0,
       0,
-      width,
-      height,
+      canvas.clientWidth,
+      canvas.clientHeight,
     );
 
     pdf.save(
-      `collabcanvas-${workspaceId}.pdf`,
+      'collabcanvas.pdf',
     );
-  }, [workspaceId]);
+  }
 
   return (
     <div className="canvas-workspace">
       <div className="canvas-toolbar">
-        {TOOLS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={
-              tool === item.id ? 'active' : ''
-            }
-            onClick={() => setTool(item.id)}
-            title={item.label}
-          >
-            <span>{item.icon}</span>
-            <span>{item.label}</span>
-          </button>
-        ))}
+        <button
+          type="button"
+          className={
+            tool === 'pen'
+              ? 'active'
+              : ''
+          }
+          onClick={() =>
+            setTool('pen')
+          }
+        >
+          ✎ Pen
+        </button>
+
+        <button
+          type="button"
+          className={
+            tool === 'eraser'
+              ? 'active'
+              : ''
+          }
+          onClick={() =>
+            setTool('eraser')
+          }
+        >
+          ⌫ Eraser
+        </button>
+
+        <button
+          type="button"
+          className={
+            tool === 'line'
+              ? 'active'
+              : ''
+          }
+          onClick={() =>
+            setTool('line')
+          }
+        >
+          ╱ Line
+        </button>
+
+        <button
+          type="button"
+          className={
+            tool === 'rect'
+              ? 'active'
+              : ''
+          }
+          onClick={() =>
+            setTool('rect')
+          }
+        >
+          □ Rectangle
+        </button>
+
+        <button
+          type="button"
+          className={
+            tool === 'circle'
+              ? 'active'
+              : ''
+          }
+          onClick={() =>
+            setTool('circle')
+          }
+        >
+          ○ Circle
+        </button>
+
+        <button
+          type="button"
+          className={
+            tool === 'text'
+              ? 'active'
+              : ''
+          }
+          onClick={() =>
+            setTool('text')
+          }
+        >
+          T Text
+        </button>
 
         <span className="canvas-divider" />
 
-        {COLORS.map((item) => (
-          <button
-            key={item}
-            type="button"
-            className={
-              color === item
-                ? 'canvas-color selected'
-                : 'canvas-color'
-            }
-            style={{
-              backgroundColor: item,
-            }}
-            onClick={() => setColor(item)}
-            aria-label={`Color ${item}`}
-          />
-        ))}
+        <div className="canvas-color">
+          {COLORS.map(
+            (item) => (
+              <button
+                key={item}
+                type="button"
+                aria-label={`Color ${item}`}
+                className={
+                  color === item
+                    ? 'active'
+                    : ''
+                }
+                style={{
+                  background:
+                    item,
+                }}
+                onClick={() =>
+                  setColor(item)
+                }
+              />
+            ),
+          )}
+        </div>
+
+        <select
+          className="canvas-size"
+          value={size}
+          onChange={(event) =>
+            setSize(
+              Number(
+                event.target.value,
+              ),
+            )
+          }
+        >
+          <option value={2}>
+            2px
+          </option>
+          <option value={4}>
+            4px
+          </option>
+          <option value={6}>
+            6px
+          </option>
+          <option value={10}>
+            10px
+          </option>
+          <option value={16}>
+            16px
+          </option>
+        </select>
 
         <span className="canvas-divider" />
-
-        <label className="canvas-size">
-          <span>Size</span>
-
-          <input
-            type="range"
-            min="1"
-            max="30"
-            value={size}
-            onChange={(event) =>
-              setSize(
-                Number(event.target.value),
-              )
-            }
-          />
-
-          <span>{size}px</span>
-        </label>
-
-        <span className="toolbar-spacer" />
-
-        {saving && (
-          <span className="canvas-saving">
-            Saving...
-          </span>
-        )}
-
-        {canClear && (
-          <button
-            type="button"
-            onClick={clearCanvasCompletely}
-          >
-            Clear
-          </button>
-        )}
 
         <button
           type="button"
@@ -742,25 +1321,49 @@ export default function CollaborativeCanvas({
         >
           PDF
         </button>
+
+        {canClear && (
+          <button
+            type="button"
+            onClick={clearCanvas}
+          >
+            Clear
+          </button>
+        )}
+
+        {saving && (
+          <span className="canvas-saving">
+            Saving...
+          </span>
+        )}
       </div>
 
       {error && (
-        <div className="error-state">
-          <span>{error}</span>
-        </div>
+        <ErrorState
+          message={error}
+          onRetry={load}
+        />
       )}
 
       <div
         ref={stageRef}
         className="canvas-stage"
+        onPointerCancel={
+          handleCancel
+        }
       >
         <canvas
           ref={baseCanvasRef}
           className="canvas-base"
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
+          onPointerDown={
+            handleDown
+          }
+          onPointerMove={
+            handleMove
+          }
+          onPointerUp={
+            handleUp
+          }
         />
 
         <canvas
@@ -770,22 +1373,65 @@ export default function CollaborativeCanvas({
 
         {loading && (
           <div className="canvas-loading">
-            Loading canvas...
+            Loading shared canvas...
           </div>
         )}
-      </div>
 
-      <div className="canvas-status">
-        <span>
-          {saving ? 'Saving...' : 'Saved'}
-        </span>
+        {textEditor && (
+          <div
+            className="canvas-text-editor"
+            style={{
+              left:
+                textEditor.left,
+              top:
+                textEditor.top,
+            }}
+          >
+            <input
+              ref={textRef}
+              value={
+                textEditor.text
+              }
+              onChange={(event) =>
+                setTextEditor(
+                  (current) => ({
+                    ...current,
+                    text:
+                      event.target.value,
+                  }),
+                )
+              }
+              onKeyDown={(event) => {
+                if (
+                  event.key ===
+                  'Enter'
+                ) {
+                  event.preventDefault();
+                  void submitText();
+                }
 
-        <span>
-          {actions.length}{' '}
-          {actions.length === 1
-            ? 'drawing'
-            : 'drawings'}
-        </span>
+                if (
+                  event.key ===
+                  'Escape'
+                ) {
+                  setTextEditor(
+                    null,
+                  );
+                }
+              }}
+              placeholder="Type..."
+            />
+
+            <button
+              type="button"
+              onClick={() =>
+                void submitText()
+              }
+            >
+              Add
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
