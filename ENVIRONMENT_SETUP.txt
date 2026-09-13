@@ -1,0 +1,20 @@
+COLLABCANVAS ENVIRONMENT SETUP
+
+Frontend: web/.env.local
+
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_SUPABASE_PUBLISHABLE_KEY
+NEXT_PUBLIC_API_URL=http://localhost:5000/api
+
+Backend: server/.env
+
+PORT=5000
+CLIENT_ORIGIN=http://localhost:3000
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+SUPABASE_PUBLISHABLE_KEY=YOUR_SUPABASE_PUBLISHABLE_KEY
+SUPABASE_SECRET_KEY=YOUR_SUPABASE_SECRET_KEY
+
+IMPORTANT
+- Do not upload either .env file to GitHub.
+- Use the Publishable key in the frontend.
+- Keep the Secret key only on the server.
